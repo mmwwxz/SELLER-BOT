@@ -1,3 +1,4 @@
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -9,13 +10,16 @@ import pandas as pd
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import time
 import os
 from decouple import config as config_settings
 import aiofiles
+import time
+
 
 # Токен вашего Telegram-бота
 TELEGRAM_BOT_TOKEN = config_settings('TELEGRAM_BOT_TOKEN')
+
+ALLOWED_USER_IDS = [1238343405, 5477009884]
 
 # Параметры почтового сервера
 SMTP_SERVER = 'smtp.gmail.com'
@@ -49,13 +53,19 @@ class Form(StatesGroup):
 @dp.message_handler(commands='start', state='*')
 async def start(message: types.Message):
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    buttons = ['Создать файл', 'Начать рассылку', 'Вывести ссылки', 'Проверка на дубликаты', 'Поиск по почте']
+    buttons = ['Вывести ссылки', 'Проверка на дубликаты', 'Поиск по почте', 'Создать файл', 'Начать рассылку']
     keyboard.add(*buttons)
     await message.answer('Здравствуйте! Выберите действие:', reply_markup=keyboard)
     await Form.MAIN_MENU.set()
 
 
 # Обработка создания файла
+async def save_data_to_file(name, email, file_name):
+    file_path = 'data_storage.txt'
+    with open(file_path, 'a') as file:
+        file.write(f"{name},{email},{file_name}\n")
+
+
 @dp.message_handler(lambda message: message.text == 'Создать файл', state=Form.MAIN_MENU)
 async def request_file_name(message: types.Message, state: FSMContext):
     await message.answer('Введите название файла:', reply_markup=ReplyKeyboardRemove())
@@ -68,12 +78,6 @@ async def create_file(message: types.Message, state: FSMContext):
     await state.update_data(file_name=file_name, data=[])
     await message.answer('Введите данные в формате:\nИмя\nEmail')
     await Form.ADD_DATA.set()
-
-
-async def save_data_to_file(name, email, file_name):
-    file_path = 'data_storage.txt'
-    with open(file_path, 'a') as file:
-        file.write(f"{name},{email},{file_name}\n")
 
 
 @dp.message_handler(state=Form.ADD_DATA)
@@ -97,11 +101,29 @@ async def add_data(message: types.Message, state: FSMContext):
 
         file_name = data['file_name']
 
-        # Проверка, существует ли уже такой человек
+        # Проверка существования email в текущих данных состояния
         for entry in data['data']:
             if entry['email'].lower() == email.lower():
                 await message.answer(f'Человек с email {email} уже существует. Пропускаем.')
                 return
+
+        # Проверка существования email в data_storage.txt
+        file_path = 'data_storage.txt'
+        email_exists = False
+        try:
+            with open(file_path, 'r') as file:
+                lines = file.readlines()
+                for line in lines:
+                    stored_email = line.split(',')[1].strip().lower()
+                    if stored_email == email.lower():
+                        email_exists = True
+                        break
+        except FileNotFoundError:
+            pass
+
+        if email_exists:
+            await message.answer(f'Человек с email {email} уже существует в файле. Пропускаем.')
+            return
 
         data['data'].append({'name': name, 'email': email, 'file_name': file_name})
         await save_data_to_file(name, email, file_name)
@@ -234,6 +256,7 @@ def send_email(to_address, subject, body):
         server.send_message(msg)
 
 
+# Вывести ссылки
 @dp.message_handler(lambda message: message.text == 'Вывести ссылки', state=Form.MAIN_MENU)
 async def request_links_file_name(message: types.Message, state: FSMContext):
     await message.answer('Введите название файла для сохранения ссылок:', reply_markup=ReplyKeyboardRemove())
@@ -259,7 +282,11 @@ async def handle_links_file(message: types.Message, state: FSMContext):
     links_file_name = data.get('links_file_name', 'links').strip()
 
     df = pd.read_excel(file_path.name)
-    sku_list = df['SKU'].tolist()
+
+    # Удаление дубликатов и выбор одного SKU для каждого бренда
+    df_unique = df.drop_duplicates(subset=['Бренд']).reset_index(drop=True)
+
+    sku_list = df_unique['SKU'].tolist()
 
     base_url = "https://www.wildberries.ru/catalog/"
     links = []
@@ -268,8 +295,8 @@ async def handle_links_file(message: types.Message, state: FSMContext):
         url = base_url + str(sku) + "/detail.aspx"
         links.append(url)
 
-    # Удаление дубликатов и создание строки с уникальными ссылками с отступами
-    unique_links = list(set(links))  # преобразуем в множество, чтобы удалить дубликаты, затем обратно в список
+    # Создание строки с уникальными ссылками
+    unique_links = list(set(links))  # Преобразуем в множество для удаления дубликатов, затем обратно в список
 
     # Запись уникальных ссылок в текстовый файл
     links_str = ""
@@ -280,15 +307,15 @@ async def handle_links_file(message: types.Message, state: FSMContext):
     with open(links_file_path, 'w') as file:
         file.write(links_str)
 
-    # Сохранение данных без дубликатов обратно в Excel файл
+    # Сохранение уникальных данных обратно в Excel файл
     output_file_path = f'info_wb/without_duplicates_{links_file_name}.xlsx'
-    df.to_excel(output_file_path, index=False)
+    df_unique.to_excel(output_file_path, index=False)
 
     with open(links_file_path, 'rb') as file:
         await message.answer_document(file, caption=f'Ссылки сохранены в "{links_file_name}.txt"')
 
-    await message.answer(f'Найдено артикулов: {len(sku_list)}')
-    await message.answer(f"Найдено дубликатов: {len(links) - len(unique_links)}")
+    await message.answer(f'Найдено артикулов: {len(df)}')
+    await message.answer(f"Найдено дубликатов: {len(df) - len(df_unique)}")
 
     await state.finish()
     await start(message)
