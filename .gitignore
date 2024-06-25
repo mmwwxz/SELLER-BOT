@@ -177,3 +177,9 @@ pyrightconfig.json
 .DS_Store
 .idea/
 data/data_storage.txt
+
+# Игнорирование всех файлов с расширением .txt
+*.txt
+
+# Игнорирование всех файлов с расширением .xlsx
+*.xlsx
