@@ -49,8 +49,18 @@ class Form(StatesGroup):
     SEARCH_EMAIL = State()
 
 
+def check_user(func):
+    async def wrapper(message: types.Message, state: FSMContext):
+        if message.from_user.id not in ALLOWED_USER_IDS:
+            await message.answer("У вас нет доступа к этой команде.")
+            return
+        return await func(message, state)
+    return wrapper
+
+
 # Начало работы бота
 @dp.message_handler(commands='start', state='*')
+@check_user
 async def start(message: types.Message):
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     buttons = ['Вывести ссылки', 'Проверка на дубликаты', 'Поиск по почте', 'Создать файл', 'Начать рассылку']
@@ -60,19 +70,22 @@ async def start(message: types.Message):
 
 
 # Обработка создания файла
+@check_user
 async def save_data_to_file(name, email, file_name):
-    file_path = 'data_storage.txt'
+    file_path = 'data/data_storage.txt'
     with open(file_path, 'a') as file:
         file.write(f"{name},{email},{file_name}\n")
 
 
 @dp.message_handler(lambda message: message.text == 'Создать файл', state=Form.MAIN_MENU)
+@check_user
 async def request_file_name(message: types.Message, state: FSMContext):
     await message.answer('Введите название файла:', reply_markup=ReplyKeyboardRemove())
     await Form.FILE_NAME.set()
 
 
 @dp.message_handler(state=Form.FILE_NAME)
+@check_user
 async def create_file(message: types.Message, state: FSMContext):
     file_name = message.text.strip()
     await state.update_data(file_name=file_name, data=[])
@@ -81,6 +94,7 @@ async def create_file(message: types.Message, state: FSMContext):
 
 
 @dp.message_handler(state=Form.ADD_DATA)
+@check_user
 async def add_data(message: types.Message, state: FSMContext):
     text = message.text
     if text == 'Завершить и создать файл':
@@ -108,7 +122,7 @@ async def add_data(message: types.Message, state: FSMContext):
                 return
 
         # Проверка существования email в data_storage.txt
-        file_path = 'data_storage.txt'
+        file_path = 'data/data_storage.txt'
         email_exists = False
         try:
             with open(file_path, 'r') as file:
@@ -135,6 +149,7 @@ async def add_data(message: types.Message, state: FSMContext):
     await message.answer('Введите следующие данные или завершите создание файла:', reply_markup=keyboard)
 
 
+@check_user
 async def finish_and_create_file(message: types.Message, state: FSMContext):
     data = await state.get_data()
     file_name = data.get('file_name', 'output').strip()
@@ -169,7 +184,7 @@ async def finish_and_create_file(message: types.Message, state: FSMContext):
         'Body': [new_body_template.format(name=entry['name']) for entry in data['data']]
     })
 
-    new_file_path = f'email_wb/{file_name}.xlsx'
+    new_file_path = f'email/{file_name}.xlsx'
     df.to_excel(new_file_path, index=False)
 
     with open(new_file_path, 'rb') as file:
@@ -181,13 +196,15 @@ async def finish_and_create_file(message: types.Message, state: FSMContext):
 
 # Начало рассылки писем
 @dp.message_handler(lambda message: message.text == 'Начать рассылку', state=Form.MAIN_MENU)
+@check_user
 async def start_sending_emails(message: types.Message):
     await message.answer('Пожалуйста, отправьте файл с данными для рассылки.', reply_markup=ReplyKeyboardRemove())
     await Form.UPLOAD_FILE.set()
 
 
+@check_user
 async def check_email_in_history(email_to_check):
-    file_path = 'data_storage.txt'
+    file_path = 'data/data_storage.txt'
     async with aiofiles.open(file_path, 'r') as file:
         async for line in file:
             parts = line.strip().split(',')
@@ -199,9 +216,10 @@ async def check_email_in_history(email_to_check):
 
 
 @dp.message_handler(content_types=types.ContentType.DOCUMENT, state=Form.UPLOAD_FILE)
+@check_user
 async def handle_uploaded_file(message: types.Message, state: FSMContext):
     document = message.document
-    file_path = await document.download(destination='uploaded_emails.xlsx')
+    file_path = await document.download(destination='data/uploaded_emails.xlsx')
 
     df = pd.read_excel(file_path.name)
 
@@ -226,7 +244,8 @@ async def handle_uploaded_file(message: types.Message, state: FSMContext):
             send_email(to_address, subject, body)
             emails_sent += 1
             current_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
-            await message.answer(f'Отправлено писем {emails_sent}/{total_emails} на адрес {to_address} в {current_time}')
+            await message.answer(f'Отправлено писем {emails_sent}/{total_emails} на адрес {to_address}'
+                                 f' в {current_time}')
         except Exception as e:
             await message.answer(f'Ошибка при отправке письма на адрес {to_address}: {e}')
 
@@ -242,6 +261,7 @@ async def handle_uploaded_file(message: types.Message, state: FSMContext):
 
 
 # Отправка email
+@check_user
 def send_email(to_address, subject, body):
     msg = MIMEMultipart()
     msg['From'] = SMTP_USERNAME
@@ -258,12 +278,14 @@ def send_email(to_address, subject, body):
 
 # Вывести ссылки
 @dp.message_handler(lambda message: message.text == 'Вывести ссылки', state=Form.MAIN_MENU)
+@check_user
 async def request_links_file_name(message: types.Message, state: FSMContext):
     await message.answer('Введите название файла для сохранения ссылок:', reply_markup=ReplyKeyboardRemove())
     await Form.LINKS_FILE_NAME.set()
 
 
 @dp.message_handler(state=Form.LINKS_FILE_NAME)
+@check_user
 async def handle_links_file_name(message: types.Message, state: FSMContext):
     file_name = message.text.strip()
 
@@ -274,9 +296,10 @@ async def handle_links_file_name(message: types.Message, state: FSMContext):
 
 
 @dp.message_handler(content_types=types.ContentType.DOCUMENT, state=Form.GET_LINKS)
+@check_user
 async def handle_links_file(message: types.Message, state: FSMContext):
     document = message.document
-    file_path = await document.download(destination='uploaded_data.xlsx')
+    file_path = await document.download(destination='data/uploaded_data.xlsx')
 
     data = await state.get_data()
     links_file_name = data.get('links_file_name', 'links').strip()
@@ -303,12 +326,12 @@ async def handle_links_file(message: types.Message, state: FSMContext):
     for idx, link in enumerate(unique_links, start=1):
         links_str += f"{idx}. {link}\n"
 
-    links_file_path = f'info_wb/{links_file_name}.txt'
+    links_file_path = f'info/{links_file_name}.txt'
     with open(links_file_path, 'w') as file:
         file.write(links_str)
 
     # Сохранение уникальных данных обратно в Excel файл
-    output_file_path = f'info_wb/without_duplicates_{links_file_name}.xlsx'
+    output_file_path = f'info/without_duplicates_{links_file_name}.xlsx'
     df_unique.to_excel(output_file_path, index=False)
 
     with open(links_file_path, 'rb') as file:
@@ -322,12 +345,14 @@ async def handle_links_file(message: types.Message, state: FSMContext):
 
 
 @dp.message_handler(lambda message: message.text == 'Проверка на дубликаты', state=Form.MAIN_MENU)
+@check_user
 async def request_duplicates_file_name(message: types.Message, state: FSMContext):
     await message.answer('Введите название файла для сохранения без дубликатов:', reply_markup=ReplyKeyboardRemove())
     await Form.DUPLICATES_FILE_NAME.set()
 
 
 @dp.message_handler(state=Form.DUPLICATES_FILE_NAME)
+@check_user
 async def handle_duplicates_file_name(message: types.Message, state: FSMContext):
     file_name = message.text.strip()
 
@@ -338,6 +363,7 @@ async def handle_duplicates_file_name(message: types.Message, state: FSMContext)
 
 
 @dp.message_handler(content_types=types.ContentType.DOCUMENT, state=Form.CHECK_DUPLICATES)
+@check_user
 async def handle_duplicates_file(message: types.Message, state: FSMContext):
     document = message.document
     file_path = await document.download(destination='uploaded_links.txt')
@@ -353,12 +379,13 @@ async def handle_duplicates_file(message: types.Message, state: FSMContext):
     duplicates_count = len(links) - len(unique_links)
 
     # Запись уникальных ссылок обратно в текстовый файл с нумерацией
-    output_file_path = f'info_wb/{duplicates_file_name}.txt'
+    output_file_path = f'info/{duplicates_file_name}.txt'
     with open(output_file_path, 'w') as file:
         for index, link in enumerate(unique_links, start=1):
             file.write(f"{index}. {link}\n")
 
-    await message.answer_document(open(output_file_path, 'rb'), caption=f'Ссылки без дубликатов сохранены в "{duplicates_file_name}.txt"')
+    await message.answer_document(open(output_file_path, 'rb'), caption=f'Ссылки без дубликатов сохранены в '
+                                                                        f'"{duplicates_file_name}.txt"')
     await message.answer(f'Всего ссылок: {len(links)}')
     await message.answer(f'Найдено дубликатов: {duplicates_count}')
     await message.answer(f'Уникальных ссылок: {len(unique_links)}')
@@ -369,17 +396,19 @@ async def handle_duplicates_file(message: types.Message, state: FSMContext):
 
 # Обработка поиска по email
 @dp.message_handler(lambda message: message.text == 'Поиск по почте', state=Form.MAIN_MENU)
+@check_user
 async def search_by_email(message: types.Message):
     await message.answer('Введите email для поиска:', reply_markup=ReplyKeyboardRemove())
     await Form.SEARCH_EMAIL.set()
 
 
+@check_user
 async def search_data_by_email(email_to_search):
     results = []
     files_with_email = []
 
     # Поиск по файлам
-    file_path = 'data_storage.txt'
+    file_path = 'data/data_storage.txt'
     with open(file_path, 'r') as file:
         for line in file:
             parts = line.strip().split(',')
@@ -393,6 +422,7 @@ async def search_data_by_email(email_to_search):
 
 
 @dp.message_handler(state=Form.SEARCH_EMAIL)
+@check_user
 async def handle_search_email(message: types.Message, state: FSMContext):
     email_to_search = message.text.strip().lower()
 
